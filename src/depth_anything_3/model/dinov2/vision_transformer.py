@@ -348,25 +348,36 @@ class DinoVisionTransformer(nn.Module):
                 aux_output.append(x)
         return output, aux_output
 
-    def process_attention(self, x, block, attn_type="global", pos=None, attn_mask=None):
+    def process_attention(self, x, block, attn_type="global", pos=None, attn_mask=None, chunk_size=128):
         b, s, n = x.shape[:3]
         if attn_type == "local":
             x = rearrange(x, "b s n c -> (b s) n c")
             if pos is not None:
                 pos = rearrange(pos, "b s n c -> (b s) n c")
+
+            total = b * s
+            if chunk_size is not None and chunk_size < total:
+                # Chunked processing to save memory
+                outputs = []
+                for i in range(0, total, chunk_size):
+                    end = min(i + chunk_size, total)
+                    chunk_x = x[i:end]
+                    chunk_pos = pos[i:end] if pos is not None else None
+                    chunk_out = block(chunk_x, pos=chunk_pos, attn_mask=attn_mask)
+                    outputs.append(chunk_out)
+                x = torch.cat(outputs, dim=0)
+            else:
+                x = block(x, pos=pos, attn_mask=attn_mask)
+
+            x = rearrange(x, "(b s) n c -> b s n c", b=b, s=s)
         elif attn_type == "global":
             x = rearrange(x, "b s n c -> b (s n) c")
             if pos is not None:
                 pos = rearrange(pos, "b s n c -> b (s n) c")
+            x = block(x, pos=pos, attn_mask=attn_mask)
+            x = rearrange(x, "b (s n) c -> b s n c", b=b, s=s)
         else:
             raise ValueError(f"Invalid attention type: {attn_type}")
-
-        x = block(x, pos=pos, attn_mask=attn_mask)
-
-        if attn_type == "local":
-            x = rearrange(x, "(b s) n c -> b s n c", b=b, s=s)
-        elif attn_type == "global":
-            x = rearrange(x, "b (s n) c -> b s n c", b=b, s=s)
         return x
 
     def get_intermediate_layers(
